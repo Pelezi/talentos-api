@@ -12,6 +12,4 @@ export interface Config {
 
     readonly HEALTH_TOKEN: string;
 
-    readonly WEBHOOK_VERIFY_TOKEN: string;
-
 }

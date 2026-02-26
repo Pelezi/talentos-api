@@ -16,7 +16,6 @@ export const configProvider = {
             JWT_SECRET: Joi.string().required(),
             JWT_ISSUER: Joi.string().required(),
             HEALTH_TOKEN: Joi.string().required(),
-            WEBHOOK_VERIFY_TOKEN: Joi.string().required(),
         });
 
         const result = validationSchema.validate(env);
