@@ -367,4 +367,157 @@ export class SubcategoryService {
         return new SubcategoryData(updated);
     }
 
+    /**
+     * Set a subcategory as the default for automatic fee transactions (must be EXPENSE type)
+     *
+     * @param id Subcategory ID
+     * @param userId User ID
+     */
+    public async setDefaultFeeSubcategory(id: number, userId: number): Promise<SubcategoryData> {
+        const subcategory = await this.prismaService.subcategory.findFirst({
+            where: { id, userId }
+        });
+
+        if (!subcategory) {
+            throw new NotFoundException('Subcategory not found');
+        }
+
+        if (subcategory.type !== 'EXPENSE') {
+            throw new HttpException('A subcategoria padrão de taxa precisa ser de despesa', HttpStatus.BAD_REQUEST);
+        }
+
+        await this.prismaService.$transaction([
+            this.prismaService.subcategory.updateMany({
+                where: { userId, groupId: subcategory.groupId ?? undefined, type: 'EXPENSE', isDefaultFee: true },
+                data: { isDefaultFee: false }
+            }),
+            this.prismaService.subcategory.update({
+                where: { id },
+                data: { isDefaultFee: true }
+            })
+        ]);
+
+        const result = await this.prismaService.subcategory.findUnique({ where: { id } });
+        return new SubcategoryData(result!);
+    }
+
+    /**
+     * Set a subcategory as the default for automatic discount transactions (must be INCOME type)
+     *
+     * @param id Subcategory ID
+     * @param userId User ID
+     */
+    public async setDefaultDiscountSubcategory(id: number, userId: number): Promise<SubcategoryData> {
+        const subcategory = await this.prismaService.subcategory.findFirst({
+            where: { id, userId }
+        });
+
+        if (!subcategory) {
+            throw new NotFoundException('Subcategory not found');
+        }
+
+        if (subcategory.type !== 'INCOME') {
+            throw new HttpException('A subcategoria padrão de desconto precisa ser de renda', HttpStatus.BAD_REQUEST);
+        }
+
+        await this.prismaService.$transaction([
+            this.prismaService.subcategory.updateMany({
+                where: { userId, groupId: subcategory.groupId ?? undefined, type: 'INCOME', isDefaultDiscount: true },
+                data: { isDefaultDiscount: false }
+            }),
+            this.prismaService.subcategory.update({
+                where: { id },
+                data: { isDefaultDiscount: true }
+            })
+        ]);
+
+        const result = await this.prismaService.subcategory.findUnique({ where: { id } });
+        return new SubcategoryData(result!);
+    }
+
+    public async clearDefaultFeeSubcategory(userId: number, groupId?: number): Promise<void> {
+        await this.prismaService.subcategory.updateMany({
+            where: {
+                userId,
+                groupId: groupId ?? null,
+                type: 'EXPENSE',
+                isDefaultFee: true,
+            },
+            data: { isDefaultFee: false } as any,
+        });
+    }
+
+    public async clearDefaultDiscountSubcategory(userId: number, groupId?: number): Promise<void> {
+        await this.prismaService.subcategory.updateMany({
+            where: {
+                userId,
+                groupId: groupId ?? null,
+                type: 'INCOME',
+                isDefaultDiscount: true,
+            },
+            data: { isDefaultDiscount: false } as any,
+        });
+    }
+
+    public async setDefaultTitheSubcategory(id: number, userId: number): Promise<SubcategoryData> {
+        const subcategory = await this.prismaService.subcategory.findFirst({
+            where: { id, userId }
+        });
+
+        if (!subcategory) {
+            throw new NotFoundException('Subcategory not found');
+        }
+
+        if (subcategory.type !== 'EXPENSE') {
+            throw new HttpException('A subcategoria padrão de dizimo precisa ser de despesa', HttpStatus.BAD_REQUEST);
+        }
+
+        await this.prismaService.$transaction([
+            this.prismaService.subcategory.updateMany({
+                where: { userId, groupId: subcategory.groupId ?? undefined, type: 'EXPENSE', isDefaultTithe: true } as any,
+                data: { isDefaultTithe: false } as any
+            }),
+            this.prismaService.subcategory.update({
+                where: { id },
+                data: { isDefaultTithe: true } as any
+            })
+        ]);
+
+        const result = await this.prismaService.subcategory.findUnique({ where: { id } });
+        return new SubcategoryData(result!);
+    }
+
+    public async clearDefaultTitheSubcategory(userId: number, groupId?: number): Promise<void> {
+        await this.prismaService.subcategory.updateMany({
+            where: {
+                userId,
+                groupId: groupId ?? null,
+                type: 'EXPENSE',
+                isDefaultTithe: true,
+            } as any,
+            data: { isDefaultTithe: false } as any,
+        });
+    }
+
+    public async setTitheParticipant(id: number, userId: number, enabled: boolean): Promise<SubcategoryData> {
+        const subcategory = await this.prismaService.subcategory.findFirst({
+            where: { id, userId }
+        });
+
+        if (!subcategory) {
+            throw new NotFoundException('Subcategory not found');
+        }
+
+        if (subcategory.type !== 'INCOME') {
+            throw new HttpException('A subcategoria participante de dizimo precisa ser de renda', HttpStatus.BAD_REQUEST);
+        }
+
+        const updated = await this.prismaService.subcategory.update({
+            where: { id },
+            data: { isTitheParticipant: enabled } as any
+        });
+
+        return new SubcategoryData(updated as any);
+    }
+
 }

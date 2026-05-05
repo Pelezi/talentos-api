@@ -242,6 +242,22 @@ export class AccountService {
             }
         }
 
+        // Validate credit card specific fields
+        if (data.type === 'CREDIT') {
+            if (data.creditClosingDay && (data.creditClosingDay < 1 || data.creditClosingDay > 31)) {
+                throw new HttpException('Dia de fechamento deve estar entre 1 e 31', HttpStatus.BAD_REQUEST);
+            }
+            if (data.creditDueDay && (data.creditDueDay < 1 || data.creditDueDay > 31)) {
+                throw new HttpException('Dia de vencimento deve estar entre 1 e 31', HttpStatus.BAD_REQUEST);
+            }
+            if (data.autoInvoice && (!data.creditClosingDay || !data.creditDueDay)) {
+                throw new HttpException(
+                    'Dia de fechamento e dia de vencimento são obrigatórios para ativar faturas automáticas',
+                    HttpStatus.BAD_REQUEST,
+                );
+            }
+        }
+
         const account = await this.prismaService.account.create({
             data: {
                 userId: data.userId || userId,
@@ -252,9 +268,24 @@ export class AccountService {
                 subcategoryId: data.subcategoryId,
                 creditDueDay: data.creditDueDay,
                 creditClosingDay: data.creditClosingDay,
-                debitMethod: data.debitMethod
+                debitMethod: data.debitMethod,
+                autoInvoice: data.autoInvoice ?? false,
+                isPrimary: data.isPrimary && data.type === 'CASH' ? true : false,
             } as any
         });
+
+        // If this is a primary CASH account, unset other CASH accounts in the same scope
+        if (account.type === 'CASH' && (data.isPrimary ?? false)) {
+            const ownershipScope = account.groupId ? { groupId: account.groupId } : { userId: account.userId, groupId: null };
+            await this.prismaService.account.updateMany({
+                where: {
+                    ...ownershipScope,
+                    type: 'CASH',
+                    NOT: { id: account.id },
+                },
+                data: { isPrimary: false },
+            });
+        }
 
         // Create initial balance if provided
         if (data.initialBalance !== undefined) {
@@ -314,6 +345,26 @@ export class AccountService {
             }
         }
 
+        // Validate credit card specific fields
+        if (data.type === 'CREDIT' || existingAccount.type === 'CREDIT') {
+            if (data.creditClosingDay && (data.creditClosingDay < 1 || data.creditClosingDay > 31)) {
+                throw new HttpException('Dia de fechamento deve estar entre 1 e 31', HttpStatus.BAD_REQUEST);
+            }
+            if (data.creditDueDay && (data.creditDueDay < 1 || data.creditDueDay > 31)) {
+                throw new HttpException('Dia de vencimento deve estar entre 1 e 31', HttpStatus.BAD_REQUEST);
+            }
+            // If enabling autoInvoice, ensure closing and due days are set
+            const newAutoInvoice = data.autoInvoice ?? (existingAccount as any).autoInvoice;
+            const effectiveClosingDay = data.creditClosingDay ?? (existingAccount as any).creditClosingDay;
+            const effectiveDueDay = data.creditDueDay ?? (existingAccount as any).creditDueDay;
+            if (newAutoInvoice && (!effectiveClosingDay || !effectiveDueDay)) {
+                throw new HttpException(
+                    'Dia de fechamento e dia de vencimento são obrigatórios para ativar faturas automáticas',
+                    HttpStatus.BAD_REQUEST,
+                );
+            }
+        }
+
         const updateData: Prisma.AccountUpdateInput = {};
 
         if (data.name !== undefined) updateData.name = data.name;
@@ -332,11 +383,35 @@ export class AccountService {
         if (data.creditClosingDay !== undefined) updateData.creditClosingDay = data.creditClosingDay;
         if (data.debitMethod !== undefined) updateData.debitMethod = data.debitMethod;
         if (data.budgetMonthBasis !== undefined) updateData.budgetMonthBasis = data.budgetMonthBasis;
+        if (data.autoInvoice !== undefined) (updateData as any).autoInvoice = data.autoInvoice;
+        if (data.isPrimary !== undefined) (updateData as any).isPrimary = data.isPrimary && (data.type ?? existingAccount.type) === 'CASH' ? true : false;
+
+        // If type is changing away from CREDIT, clear autoInvoice
+        if (data.type && data.type !== 'CREDIT' && existingAccount.type === 'CREDIT') {
+            (updateData as any).autoInvoice = false;
+        }
+        // If type is changing away from CASH, clear isPrimary
+        if (data.type && data.type !== 'CASH' && existingAccount.type === 'CASH') {
+            (updateData as any).isPrimary = false;
+        }
 
         const account = await this.prismaService.account.update({
             where: { id },
             data: updateData
         });
+
+        // If this is a primary CASH account, unset other CASH accounts in the same scope
+        if (account.type === 'CASH' && (data.isPrimary ?? false)) {
+            const ownershipScope = account.groupId ? { groupId: account.groupId } : { userId: account.userId, groupId: null };
+            await this.prismaService.account.updateMany({
+                where: {
+                    ...ownershipScope,
+                    type: 'CASH',
+                    NOT: { id: account.id },
+                },
+                data: { isPrimary: false },
+            });
+        }
 
         return new AccountData(account);
     }
@@ -641,6 +716,37 @@ export class AccountService {
         await this.prismaService.accountBalance.delete({
             where: { id }
         });
+    }
+
+    /**
+     * Get the primary CASH account for a user or group
+     * Used for auto-invoice configuration validation
+     */
+    public async getPrimaryCashAccount(userId: number, groupId?: number): Promise<AccountData | null> {
+        if (groupId) {
+            const groupMember = await this.prismaService.groupMember.findFirst({
+                where: {
+                    groupId,
+                    userId,
+                },
+            });
+
+            if (!groupMember) {
+                throw new HttpException('Você não é membro deste grupo', HttpStatus.UNAUTHORIZED);
+            }
+        }
+
+        const ownershipScope = groupId ? { groupId } : { userId, groupId: null };
+
+        const account = await this.prismaService.account.findFirst({
+            where: {
+                ...ownershipScope,
+                type: 'CASH',
+                isPrimary: true,
+            },
+        });
+
+        return account ? new AccountData(account) : null;
     }
 
 }

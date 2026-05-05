@@ -19,7 +19,6 @@ model User {
   defaultHomepage         String?
   isOwner                 Boolean  @default(false)
   refreshToken            String?
-  defaultFeeSubcategoryId Int? // Subcategoria padrão para taxas automáticas
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 
@@ -34,10 +33,10 @@ model User {
   notifications         Notification[]
   accounts              Account[]
   apiKeys               ApiKey[]
-  defaultFeeSubcategory Subcategory?      @relation("UserDefaultFeeSubcategory", fields: [defaultFeeSubcategoryId], references: [id], onDelete: SetNull)
   installmentPlans      InstallmentPlan[]
   recurrenceRules       RecurrenceRule[]
   auditLogs             AuditLog[]
+  creditInvoices        CreditInvoice[]
 }
 
 model ApiKey {
@@ -84,6 +83,12 @@ model Subcategory {
   description String?
   type        CategoryType @default(EXPENSE)
   hidden      Boolean      @default(false)
+  isDefaultFee      Boolean @default(false) // Subcategoria padrao para taxas automaticas
+  isDefaultDiscount Boolean @default(false) // Subcategoria padrao para descontos automaticos
+  isDefaultTithe    Boolean @default(false) // Subcategoria padrao para dizimo automatico
+  isTitheParticipant Boolean @default(false)
+  tithePercentage   Decimal @default(10.00) @db.Decimal(5, 2)
+  titheTransactionCount Int @default(1)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
@@ -94,8 +99,6 @@ model Subcategory {
   transactions    Transaction[]
   // Accounts that reference this subcategory (used by PREPAID accounts)
   accounts        Account[]
-  // Users who have this as default fee subcategory (many users can have same subcategory)
-  defaultForUsers User[]        @relation("UserDefaultFeeSubcategory")
 
   @@index([userId])
   @@index([groupId])
@@ -146,6 +149,7 @@ model Transaction {
   feeAccountId           Int? // Conta onde taxa será debitada
   feeTransactionId       Int?     @unique // Link para transação de taxa (auto-criada)
   linkedFeeTransactionId Int? // Link inverso (se esta é uma taxa)
+  linkedTitheTransactionId Int? // Link para transação origem de renda que gerou este dizimo
 
   // Status and scheduling fields
   status        TransactionStatus @default(CONFIRMED)
@@ -173,6 +177,9 @@ model Transaction {
   installmentPlan      InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: Cascade)
   recurrenceRule       RecurrenceRule?  @relation(fields: [recurrenceRuleId], references: [id], onDelete: SetNull)
 
+  // Credit invoice back-reference (populated when this TX is the fatura transaction)
+  creditInvoice        CreditInvoice?   @relation("CreditInvoiceTransaction")
+
   @@index([userId])
   @@index([groupId])
   @@index([subcategoryId])
@@ -185,6 +192,7 @@ model Transaction {
   @@index([scheduledDate])
   @@index([feeTransactionId])
   @@index([linkedFeeTransactionId])
+  @@index([linkedTitheTransactionId])
   @@index([parentTransactionId])
   @@index([installmentPlanId])
   @@index([recurrenceRuleId])
@@ -223,6 +231,7 @@ model Group {
   installmentPlans InstallmentPlan[]
   recurrenceRules  RecurrenceRule[]
   auditLogs        AuditLog[]
+  creditInvoices   CreditInvoice[]
 
   @@index([ownerId])
 }
@@ -354,6 +363,8 @@ model Account {
   creditClosingDay Int?
   debitMethod      DebitMethod?
   budgetMonthBasis BudgetMonthBasis? @default(PURCHASE_DATE)
+  autoInvoice      Boolean           @default(false) // Cria faturas automáticas para contas de crédito
+  isPrimary        Boolean           @default(false) // Conta principal (CASH) para pagamento de faturas
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
@@ -364,6 +375,7 @@ model Account {
   transactions         Transaction[]
   transactionsTo       Transaction[]    @relation("TransactionToAccount")
   transactionsWithFees Transaction[]    @relation("TransactionFeeAccount")
+  creditInvoices       CreditInvoice[]
 
   @@index([userId])
   @@index([groupId])
@@ -493,4 +505,39 @@ model AuditLog {
   @@index([groupId])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// ─── Fatura automática (crédito) ────────────────────────────────────────────
+
+model CreditInvoice {
+  id            Int           @id @default(autoincrement())
+  accountId     Int // Conta de crédito dona desta fatura
+  userId        Int
+  groupId       Int?
+  month         Int // Mês de vencimento da fatura (1-12)
+  year          Int // Ano de vencimento
+  dueDate       DateTime // Data exata de vencimento (creditDueDay do mês/ano)
+  totalAmount   Decimal       @db.Decimal(10, 2) @default(0) // Saldo devedor calculado
+  status        InvoiceStatus @default(OPEN)
+  transactionId Int?          @unique // Transação PENDENTE de transferência (a "fatura")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user        User         @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group       Group?       @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  transaction Transaction? @relation("CreditInvoiceTransaction", fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@unique([accountId, month, year])
+  @@index([accountId])
+  @@index([userId])
+  @@index([groupId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+enum InvoiceStatus {
+  OPEN // Fatura em aberto — acumulando transações
+  CLOSED // Fechamento passou, aguardando pagamento
+  PAID // Fatura paga
 }

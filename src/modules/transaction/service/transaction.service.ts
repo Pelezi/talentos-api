@@ -44,6 +44,7 @@ export class TransactionService {
         account: true,
         feeAccount: true,
         feeTransaction: true,
+        creditInvoice: true,
       },
     });
 
@@ -81,9 +82,6 @@ export class TransactionService {
   ): Promise<TransactionData[]> {
 
     const where: Prisma.TransactionWhereInput = {};
-
-    // Exclude fee transactions (only show main transactions)
-    where.linkedFeeTransactionId = null;
 
     // Only show confirmed transactions (exclude pending)
     where.status = 'CONFIRMED';
@@ -377,6 +375,27 @@ export class TransactionService {
           description: `Transação criada: ${data.type === 'EXPENSE' ? 'Despesa' : data.type === 'INCOME' ? 'Receita' : 'Transferência'} de R$ ${data.amount.toFixed(2)}`,
         });
 
+        // Gerenciar fatura automática
+        const involvedAccounts = [data.accountId];
+        if (data.toAccountId && Number(data.toAccountId) > 0) involvedAccounts.push(Number(data.toAccountId));
+        await this.applyAutoInvoiceDeltaForTransactionChange(
+          null,
+          updatedTransaction,
+          resolvedUserId,
+          data.groupId,
+        );
+
+        await this.createPendingTitheFromIncomeIfEligible({
+          id: transaction.id,
+          userId: resolvedUserId,
+          groupId: data.groupId,
+          subcategoryId: data.subcategoryId ?? null,
+          accountId: data.accountId,
+          amount: data.amount,
+          date: new Date(createData.date),
+          type: createData.type as CategoryType,
+        });
+
         return new TransactionData(updatedTransaction);
       }
 
@@ -395,6 +414,27 @@ export class TransactionService {
         description: `Transação criada: ${data.type === 'EXPENSE' ? 'Despesa' : data.type === 'INCOME' ? 'Receita' : 'Transferência'} de R$ ${data.amount.toFixed(2)}`,
       });
 
+      // Gerenciar fatura automática
+      const involvedAccounts = [data.accountId];
+      if (data.toAccountId && Number(data.toAccountId) > 0) involvedAccounts.push(Number(data.toAccountId));
+      await this.applyAutoInvoiceDeltaForTransactionChange(
+        null,
+        transaction,
+        resolvedUserId,
+        data.groupId,
+      );
+
+      await this.createPendingTitheFromIncomeIfEligible({
+        id: transaction.id,
+        userId: resolvedUserId,
+        groupId: data.groupId,
+        subcategoryId: data.subcategoryId ?? null,
+        accountId: data.accountId,
+        amount: data.amount,
+        date: new Date(createData.date),
+        type: createData.type as CategoryType,
+      });
+
       return new TransactionData(transaction);
     }
     catch (error) {
@@ -405,6 +445,18 @@ export class TransactionService {
   public async update(id: number, userId: number, data: Partial<TransactionInput>): Promise<TransactionData> {
     try {
       const transaction = await this.ensureTransactionAccess(id, userId);
+
+      // 🔒 VALIDAÇÃO: Verificar se é uma transação de fatura
+      const creditInvoice = await this.prismaService.creditInvoice.findFirst({
+        where: { transactionId: id }
+      });
+
+      if (creditInvoice) {
+        throw new HttpException(
+          'Transações de fatura não podem ser editadas. Para fazer alterações, edite a fatura diretamente.',
+          400
+        );
+      }
 
       // 🔒 VALIDAÇÃO: Verificar se faz parte de um plano de parcelamento
       if (transaction.installmentPlanId) {
@@ -577,6 +629,50 @@ export class TransactionService {
         });
       }
 
+      // Gerenciar fatura automática
+      const updatedAccountId = data.accountId ?? transaction.accountId;
+      const updatedToAccountId = data.toAccountId ?? transaction.toAccountId;
+      const involvedUpdateAccounts = [updatedAccountId];
+      if (transaction.accountId !== updatedAccountId) involvedUpdateAccounts.push(transaction.accountId);
+      if (updatedToAccountId && Number(updatedToAccountId) > 0) involvedUpdateAccounts.push(Number(updatedToAccountId));
+      if (transaction.toAccountId && Number(transaction.toAccountId) > 0) {
+        involvedUpdateAccounts.push(Number(transaction.toAccountId));
+      }
+      await this.applyAutoInvoiceDeltaForTransactionChange(
+        transaction,
+        finalTransaction,
+        transaction.userId,
+        transaction.groupId,
+      );
+
+      // Se esta transação é o pagamento de uma fatura (PENDING → CONFIRMED),
+      // sincronizar o status da fatura para PAID (apenas quando CLOSED)
+      if (data.status === 'CONFIRMED' && transaction.status === 'PENDING') {
+        const linkedInvoice = await (this.prismaService as any).creditInvoice.findFirst({
+          where: { transactionId: id, status: 'CLOSED' },
+          select: { id: true },
+        });
+        if (linkedInvoice) {
+          await (this.prismaService as any).creditInvoice.update({
+            where: { id: linkedInvoice.id },
+            data: { status: 'PAID' },
+          });
+        }
+
+        if (finalTransaction) {
+          await this.createPendingTitheFromIncomeIfEligible({
+            id: finalTransaction.id,
+            userId: finalTransaction.userId,
+            groupId: finalTransaction.groupId,
+            subcategoryId: finalTransaction.subcategoryId,
+            accountId: finalTransaction.accountId,
+            amount: Number(finalTransaction.amount),
+            date: finalTransaction.date,
+            type: finalTransaction.type as CategoryType,
+          });
+        }
+      }
+
       return new TransactionData(finalTransaction);
     } catch (error) {
       throw new HttpException(error.message, error.status || 500);
@@ -624,6 +720,16 @@ export class TransactionService {
           description: `Transação deletada: R$ ${groupTransaction.amount.toString()}`,
         });
 
+        // Gerenciar fatura automática
+        const delGroupAccounts = [groupTransaction.accountId];
+        if (groupTransaction.toAccountId) delGroupAccounts.push(groupTransaction.toAccountId);
+        await this.applyAutoInvoiceDeltaForTransactionChange(
+          groupTransaction,
+          null,
+          userId,
+          groupTransaction.groupId,
+        );
+
         return;
       }
       
@@ -643,6 +749,16 @@ export class TransactionService {
         action: 'DELETE',
         description: `Transação deletada: R$ ${transaction.amount.toString()}`,
       });
+
+      // Gerenciar fatura automática
+      const delAccounts = [transaction.accountId];
+      if (transaction.toAccountId) delAccounts.push(transaction.toAccountId);
+      await this.applyAutoInvoiceDeltaForTransactionChange(
+        transaction,
+        null,
+        userId,
+        transaction.groupId,
+      );
     } catch (error) {
       throw new HttpException(error.message, error.status || 500);
     }
@@ -912,7 +1028,8 @@ export class TransactionService {
             subcategory: { include: { category: true } },
             account: true
           }
-        }
+        },
+        creditInvoice: true,
       },
       orderBy: { scheduledDate: 'asc' }
     });
@@ -1007,6 +1124,43 @@ export class TransactionService {
         }
       }
 
+      // Recompute auto-invoice after this confirmation so OPEN invoices update totals
+      // and rotate to a new pending transfer when needed.
+      const involvedAccounts = [transaction.accountId];
+      if (transaction.toAccountId && Number(transaction.toAccountId) > 0) {
+        involvedAccounts.push(Number(transaction.toAccountId));
+      }
+      await this.applyAutoInvoiceDeltaForTransactionChange(
+        transaction,
+        updatedTransaction,
+        transaction.userId,
+        transaction.groupId,
+      );
+
+      // If this transaction is linked to a CLOSED invoice payment,
+      // keep invoice status synchronized when confirming via pending screen endpoint.
+      const linkedInvoice = await (this.prismaService as any).creditInvoice.findFirst({
+        where: { transactionId: id, status: 'CLOSED' },
+        select: { id: true },
+      });
+      if (linkedInvoice) {
+        await (this.prismaService as any).creditInvoice.update({
+          where: { id: linkedInvoice.id },
+          data: { status: 'PAID' },
+        });
+      }
+
+      await this.createPendingTitheFromIncomeIfEligible({
+        id: updatedTransaction.id,
+        userId: updatedTransaction.userId,
+        groupId: updatedTransaction.groupId,
+        subcategoryId: updatedTransaction.subcategoryId,
+        accountId: updatedTransaction.accountId,
+        amount: Number(updatedTransaction.amount),
+        date: updatedTransaction.date,
+        type: updatedTransaction.type,
+      });
+
       return new TransactionData(updatedTransaction);
     } catch (error) {
       throw new HttpException(error.message, error.status || 500);
@@ -1022,31 +1176,34 @@ export class TransactionService {
    * Creates "Taxas e Juros" subcategory under "Outras Despesas" category if not exists
    */
   private async createOrGetFeeSubcategory(userId: number, groupId?: number): Promise<number> {
-    // Check if user already has a default fee subcategory
-    const user = await this.prismaService.user.findUnique({
-      where: { id: userId },
-      select: { defaultFeeSubcategoryId: true }
+    // Check if user already has a default fee subcategory via the isDefaultFee flag
+    const existingDefault = await this.prismaService.subcategory.findFirst({
+      where: {
+        userId,
+        groupId: groupId ?? null,
+        isDefaultFee: true,
+        type: CategoryType.EXPENSE
+      }
     });
 
-    if (user?.defaultFeeSubcategoryId) {
-      return user.defaultFeeSubcategoryId;
+    if (existingDefault) {
+      return existingDefault.id;
     }
 
-    // Check if "Taxas e Juros" subcategory already exists
+    // Check if "Taxas e Juros" subcategory already exists (legacy, promote it to default)
     const existingSubcategory = await this.prismaService.subcategory.findFirst({
       where: {
         userId,
-        groupId,
+        groupId: groupId ?? null,
         name: 'Taxas e Juros',
         type: CategoryType.EXPENSE
       }
     });
 
     if (existingSubcategory) {
-      // Update user to reference this subcategory
-      await this.prismaService.user.update({
-        where: { id: userId },
-        data: { defaultFeeSubcategoryId: existingSubcategory.id }
+      await this.prismaService.subcategory.update({
+        where: { id: existingSubcategory.id },
+        data: { isDefaultFee: true }
       });
       return existingSubcategory.id;
     }
@@ -1073,7 +1230,7 @@ export class TransactionService {
       });
     }
 
-    // Create "Taxas e Juros" subcategory
+    // Create "Taxas e Juros" subcategory and mark as default fee
     const newSubcategory = await this.prismaService.subcategory.create({
       data: {
         userId,
@@ -1081,14 +1238,9 @@ export class TransactionService {
         categoryId: defaultCategory.id,
         name: 'Taxas e Juros',
         type: CategoryType.EXPENSE,
-        hidden: false
+        hidden: false,
+        isDefaultFee: true
       }
-    });
-
-    // Update user to reference this new subcategory
-    await this.prismaService.user.update({
-      where: { id: userId },
-      data: { defaultFeeSubcategoryId: newSubcategory.id }
     });
 
     return newSubcategory.id;
@@ -1133,6 +1285,93 @@ export class TransactionService {
     return feeTransaction;
   }
 
+  private async createPendingTitheFromIncomeIfEligible(input: {
+    id: number;
+    userId: number;
+    groupId?: number | null;
+    subcategoryId?: number | null;
+    accountId: number;
+    amount: number;
+    date: Date;
+    type: CategoryType;
+  }): Promise<void> {
+    if (input.type !== CategoryType.INCOME) {
+      return;
+    }
+
+    if (!input.subcategoryId) {
+      return;
+    }
+
+    const existingTithe = await this.prismaService.transaction.findFirst({
+      where: {
+        linkedTitheTransactionId: input.id,
+      } as any,
+      select: { id: true },
+    });
+
+    if (existingTithe) {
+      return;
+    }
+
+    const incomeSubcategory: any = await this.prismaService.subcategory.findFirst({
+      where: {
+        id: input.subcategoryId,
+      },
+      select: {
+        id: true,
+        categoryId: true,
+        type: true,
+        isTitheParticipant: true,
+      } as any,
+    });
+
+    if (!incomeSubcategory || incomeSubcategory.type !== CategoryType.INCOME) {
+      return;
+    }
+
+    const isParticipant = Boolean((incomeSubcategory as any).isTitheParticipant);
+
+    if (!isParticipant) {
+      return;
+    }
+
+    const titheSubcategory = await this.prismaService.subcategory.findFirst({
+      where: {
+        userId: input.userId,
+        groupId: input.groupId ?? null,
+        type: CategoryType.EXPENSE,
+        isDefaultTithe: true,
+      } as any,
+      select: { id: true },
+    });
+
+    if (!titheSubcategory) {
+      return;
+    }
+
+    const titheAmount = Math.round(input.amount * 0.1 * 100) / 100;
+    if (titheAmount <= 0) {
+      return;
+    }
+
+    await this.prismaService.transaction.create({
+      data: {
+        userId: input.userId,
+        groupId: input.groupId ?? null,
+        subcategoryId: titheSubcategory.id,
+        accountId: input.accountId,
+        amount: new Prisma.Decimal(titheAmount),
+        description: `Dizimo pendente ref. transação #${input.id}`,
+        date: input.date,
+        scheduledDate: input.date,
+        status: 'PENDING',
+        type: CategoryType.EXPENSE,
+        linkedTitheTransactionId: input.id,
+      } as any,
+    });
+  }
+
   /**
    * Update an existing fee transaction
    */
@@ -1171,5 +1410,687 @@ export class TransactionService {
     await this.prismaService.transaction.delete({
       where: { id: feeTransactionId }
     });
+  }
+
+  // ─── Auto-invoice (fatura automática) ───────────────────────────────────────
+
+  /**
+   * Determine which billing cycle (month/year of the DUE DATE) a transaction belongs to.
+   *
+   * Rules:
+    *  - EXPENSE / INCOME / TRANSFER FROM credit card → if txDay > closingDay, next cycle; else current cycle.
+    *  - TRANSFER TO credit card  → always current cycle (even if closing passed).
+   *
+   * Returns { month (1-12), year, dueDate }.
+   */
+  private calculateInvoiceCycle(
+    txDate: Date,
+    txType: string,
+    isCreditAccountSource: boolean, // accountId === creditAccountId
+    closingDay: number,
+    dueDay: number,
+  ): { month: number; year: number; dueDate: Date } {
+    const d = new Date(txDate);
+    const txDay = d.getUTCDate();
+    const txMonth = d.getUTCMonth(); // 0-11
+    const txYear = d.getUTCFullYear();
+
+    // Determine billing month (0-indexed) based on whether the transaction shifts to next cycle
+    let billingMonth = txMonth;
+    let billingYear = txYear;
+
+    const shiftsToNextCycle =
+      (txType === 'EXPENSE' && isCreditAccountSource) ||
+      (txType === 'INCOME' && isCreditAccountSource) ||
+      (txType === 'TRANSFER' && isCreditAccountSource);
+
+    if (shiftsToNextCycle && txDay > closingDay) {
+      billingMonth += 1;
+      if (billingMonth > 11) {
+        billingMonth = 0;
+        billingYear += 1;
+      }
+    }
+
+    // The DUE DATE is in the "billing month" if dueDay >= closingDay,
+    // or in the NEXT month if dueDay < closingDay (due is after the closing of the next month).
+    let dueMonth = billingMonth;
+    let dueYear = billingYear;
+    if (dueDay < closingDay) {
+      dueMonth += 1;
+      if (dueMonth > 11) {
+        dueMonth = 0;
+        dueYear += 1;
+      }
+    }
+
+    // Build the actual due date (use last day of month if dueDay exceeds month length)
+    const maxDay = new Date(dueYear, dueMonth + 1, 0).getDate();
+    const clampedDueDay = Math.min(dueDay, maxDay);
+    const dueDate = new Date(Date.UTC(dueYear, dueMonth, clampedDueDay));
+
+    return { month: dueMonth + 1, year: dueYear, dueDate };
+  }
+
+  /**
+   * Find or create a CreditInvoice record for a given account + billing cycle.
+   */
+  private async findOrCreateCreditInvoice(
+    accountId: number,
+    userId: number,
+    groupId: number | null | undefined,
+    month: number,
+    year: number,
+    dueDate: Date,
+  ): Promise<any> {
+    // Use upsert to avoid race conditions when two transactions land simultaneously
+    return (this.prismaService as any).creditInvoice.upsert({
+      where: { accountId_month_year: { accountId, month, year } },
+      create: {
+        accountId,
+        userId,
+        groupId: groupId ?? null,
+        month,
+        year,
+        dueDate,
+        totalAmount: 0,
+        status: 'OPEN',
+      },
+      update: {}, // already exists — no fields to update on creation path
+    });
+  }
+
+  /**
+   * Recalculate the total amount of a CreditInvoice from all qualifying confirmed transactions.
+   * EXPENSE / TRANSFER-from-credit add to total; INCOME / TRANSFER-to-credit subtract from it.
+   * The autogenerated fatura transfer is naturally excluded while PENDING because this query uses only CONFIRMED rows.
+   */
+  private async recalculateCreditInvoiceTotal(
+    invoice: { id: number; accountId: number; month: number; year: number; transactionId?: number | null },
+    closingDay: number,
+    dueDay: number,
+  ): Promise<number> {
+    const creditAccountId = invoice.accountId;
+
+    // Fetch all CONFIRMED transactions for this credit account.
+    // If a previously linked fatura transfer was confirmed early, it must participate in this total
+    // so the outstanding value is reduced correctly.
+    const allTx = await this.prismaService.transaction.findMany({
+      where: {
+        status: 'CONFIRMED',
+        OR: [
+          { accountId: creditAccountId },
+          { toAccountId: creditAccountId },
+        ],
+      },
+    });
+
+    let total = 0;
+    for (const tx of allTx) {
+      const isCreditSource = tx.accountId === creditAccountId;
+      const { month, year } = this.calculateInvoiceCycle(
+        tx.date,
+        tx.type,
+        isCreditSource,
+        closingDay,
+        dueDay,
+      );
+      if (month !== invoice.month || year !== invoice.year) continue;
+
+      if (tx.type === 'EXPENSE' && isCreditSource) {
+        total += Number(tx.amount);
+      } else if (tx.type === 'TRANSFER' && isCreditSource) {
+        total += Number(tx.amount);
+      } else if (tx.type === 'INCOME' && isCreditSource) {
+        total -= Number(tx.amount);
+      } else if (tx.type === 'TRANSFER' && tx.toAccountId === creditAccountId) {
+        total -= Number(tx.amount);
+      }
+    }
+
+    return Math.max(0, total);
+  }
+
+  /**
+   * Compute current account balance using the same baseline+transactions strategy used by account balance endpoints.
+   */
+  private async getCurrentAccountBalanceForAutoInvoice(account: {
+    id: number;
+    userId: number;
+    groupId?: number | null;
+  }): Promise<number> {
+    const accountId = account.id;
+    const now = new Date();
+
+    const lastBalance = await this.prismaService.accountBalance.findFirst({
+      where: { accountId },
+      orderBy: { date: 'desc' },
+    });
+
+    const baselineAmount = lastBalance ? Number(lastBalance.amount) : 0;
+    const baselineDate = lastBalance ? lastBalance.date : new Date(0);
+
+    const conditions: Prisma.TransactionWhereInput[] = [
+      {
+        date: {
+          gt: baselineDate,
+          lte: now,
+        },
+      },
+      {
+        OR: [
+          { accountId },
+          { toAccountId: accountId },
+        ],
+      },
+    ];
+
+    if (account.groupId !== undefined && account.groupId !== null) {
+      conditions.push({ groupId: account.groupId });
+    } else {
+      conditions.push({ userId: account.userId, groupId: null });
+    }
+
+    const transactions = await this.prismaService.transaction.findMany({
+      where: { AND: conditions },
+      orderBy: { date: 'asc' },
+    });
+
+    let net = 0;
+    for (const tx of transactions) {
+      if (tx.type === 'INCOME') {
+        if (tx.accountId === accountId) net += Number(tx.amount);
+      } else if (tx.type === 'EXPENSE') {
+        if (tx.accountId === accountId) net -= Number(tx.amount);
+      } else if (tx.type === 'TRANSFER') {
+        if (tx.accountId === accountId) net -= Number(tx.amount);
+        if (tx.toAccountId === accountId) net += Number(tx.amount);
+      }
+    }
+
+    return baselineAmount + net;
+  }
+
+  /**
+   * Create or update the fatura PENDING TRANSFER transaction for a CreditInvoice.
+   * If total is 0 the fatura transaction is deleted.
+   */
+  private async syncFaturaTransaction(
+    invoice: any,
+    userId: number,
+    groupId: number | null | undefined,
+    total: number,
+    dueDate: Date,
+  ): Promise<void> {
+    const creditAccountId = invoice.accountId;
+    const monthLabel = String(invoice.month).padStart(2, '0');
+    const title = `Fatura ${monthLabel}/${invoice.year}`;
+
+    // Find primary CASH account in the same scope
+    const ownershipScope = groupId ? { groupId } : { userId, groupId: null };
+    const primaryCashAccount = await this.prismaService.account.findFirst({
+      where: {
+        ...ownershipScope,
+        type: 'CASH',
+        isPrimary: true,
+      },
+    });
+
+    if (total <= 0) {
+      // Remove fatura transaction if it exists, but only if it is still PENDING
+      if (invoice.transactionId) {
+        const existingFaturaTx = await this.prismaService.transaction.findUnique({
+          where: { id: invoice.transactionId },
+          select: { id: true, status: true },
+        });
+        if (existingFaturaTx && existingFaturaTx.status === 'PENDING') {
+          await this.prismaService.transaction.delete({ where: { id: invoice.transactionId } }).catch(() => null);
+          await (this.prismaService as any).creditInvoice.update({
+            where: { id: invoice.id },
+            data: { totalAmount: 0, transactionId: null, dueDate },
+          });
+        } else {
+          // CONFIRMED transaction: don't delete it; just zero out the total on the invoice
+          await (this.prismaService as any).creditInvoice.update({
+            where: { id: invoice.id },
+            data: { totalAmount: 0, dueDate },
+          });
+        }
+      } else {
+        await (this.prismaService as any).creditInvoice.update({
+          where: { id: invoice.id },
+          data: { totalAmount: 0, dueDate },
+        });
+      }
+      return;
+    }
+
+    if (invoice.transactionId) {
+      // Update existing fatura transaction — only if still PENDING
+      const existingFaturaTx = await this.prismaService.transaction.findUnique({
+        where: { id: invoice.transactionId },
+        select: { id: true, status: true },
+      });
+
+      if (!existingFaturaTx) {
+        // Linked transaction was deleted externally — clear stale reference and create a new pending transfer
+        if (primaryCashAccount) {
+          const newPendingTx = await this.prismaService.transaction.create({
+            data: {
+              userId,
+              groupId: groupId ?? null,
+              accountId: primaryCashAccount.id,
+              toAccountId: creditAccountId,
+              title,
+              amount: new Prisma.Decimal(total),
+              date: dueDate,
+              scheduledDate: dueDate,
+              type: 'TRANSFER' as any,
+              status: 'PENDING' as any,
+            },
+          });
+          await (this.prismaService as any).creditInvoice.update({
+            where: { id: invoice.id },
+            data: { totalAmount: new Prisma.Decimal(total), transactionId: newPendingTx.id, dueDate },
+          });
+        } else {
+          await (this.prismaService as any).creditInvoice.update({
+            where: { id: invoice.id },
+            data: { totalAmount: new Prisma.Decimal(total), transactionId: null, dueDate },
+          });
+        }
+        return;
+      } else if (existingFaturaTx.status === 'PENDING') {
+        // Re-resolve primary CASH to keep the source account up to date
+        const updateData: any = {
+          amount: new Prisma.Decimal(total),
+          date: dueDate,
+          scheduledDate: dueDate,
+          title,
+        };
+        if (primaryCashAccount) {
+          updateData.accountId = primaryCashAccount.id;
+        }
+        await this.prismaService.transaction.update({
+          where: { id: invoice.transactionId },
+          data: updateData,
+        });
+      } else if (existingFaturaTx.status === 'CONFIRMED') {
+        // Payment was confirmed before invoice closure.
+        // Keep invoice OPEN, refresh total, and create a NEW pending transfer for the remaining amount.
+        if (primaryCashAccount) {
+          const newPendingTx = await this.prismaService.transaction.create({
+            data: {
+              userId,
+              groupId: groupId ?? null,
+              accountId: primaryCashAccount.id,
+              toAccountId: creditAccountId,
+              title,
+              amount: new Prisma.Decimal(total),
+              date: dueDate,
+              scheduledDate: dueDate,
+              type: 'TRANSFER' as any,
+              status: 'PENDING' as any,
+            },
+          });
+
+          await (this.prismaService as any).creditInvoice.update({
+            where: { id: invoice.id },
+            data: {
+              totalAmount: new Prisma.Decimal(total),
+              transactionId: newPendingTx.id,
+              dueDate,
+            },
+          });
+          return;
+        }
+
+        // No primary CASH account available: keep invoice total updated but unlink old confirmed transfer.
+        await (this.prismaService as any).creditInvoice.update({
+          where: { id: invoice.id },
+          data: {
+            totalAmount: new Prisma.Decimal(total),
+            transactionId: null,
+            dueDate,
+          },
+        });
+        return;
+      }
+      // Whether the transaction was updated or is already CONFIRMED, update the invoice total
+      await (this.prismaService as any).creditInvoice.update({
+        where: { id: invoice.id },
+        data: { totalAmount: new Prisma.Decimal(total), dueDate },
+      });
+    } else {
+      // Create new fatura transaction
+      // Only create if primary CASH account exists (to avoid self-transfers)
+      if (!primaryCashAccount) {
+        // No primary CASH account: just update invoice total without transaction
+        await (this.prismaService as any).creditInvoice.update({
+          where: { id: invoice.id },
+          data: {
+            totalAmount: new Prisma.Decimal(total),
+            transactionId: null,
+            dueDate,
+          },
+        });
+        return;
+      }
+
+      // Primary CASH exists: create TRANSFER from CASH to Credit card
+      const fromAccountId = primaryCashAccount.id;
+      const toAccountId = creditAccountId;
+
+      const faturaTx = await this.prismaService.transaction.create({
+        data: {
+          userId,
+          groupId: groupId ?? null,
+          accountId: fromAccountId,
+          toAccountId: toAccountId,
+          title,
+          amount: new Prisma.Decimal(total),
+          date: dueDate,
+          scheduledDate: dueDate,
+          type: 'TRANSFER' as any,
+          status: 'PENDING' as any,
+        },
+      });
+      await (this.prismaService as any).creditInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          totalAmount: new Prisma.Decimal(total),
+          transactionId: faturaTx.id,
+          dueDate,
+        },
+      });
+    }
+  }
+
+  /**
+   * Incremental auto-invoice updater.
+   * Applies only the delta between previous and current transaction snapshots for OPEN invoices,
+   * and falls back to full recomputation when the target invoice doesn't exist or is immutable.
+   */
+  private async applyAutoInvoiceDeltaForTransactionChange(
+    previousTx: any | null,
+    currentTx: any | null,
+    userId: number,
+    groupId: number | null | undefined,
+  ): Promise<void> {
+    const candidateAccountIds = new Set<number>();
+
+    const collectIds = (tx: any | null) => {
+      if (!tx) return;
+      if (tx.accountId) candidateAccountIds.add(Number(tx.accountId));
+      if (tx.toAccountId && Number(tx.toAccountId) > 0) candidateAccountIds.add(Number(tx.toAccountId));
+    };
+
+    collectIds(previousTx);
+    collectIds(currentTx);
+
+    if (candidateAccountIds.size === 0) return;
+
+    const accounts = await this.prismaService.account.findMany({
+      where: { id: { in: Array.from(candidateAccountIds) } },
+    }) as any[];
+
+    const creditAccounts = new Map<number, any>();
+    for (const account of accounts) {
+      if (
+        account &&
+        account.type === 'CREDIT' &&
+        account.autoInvoice &&
+        account.creditClosingDay &&
+        account.creditDueDay
+      ) {
+        creditAccounts.set(account.id, account);
+      }
+    }
+
+    if (creditAccounts.size === 0) return;
+
+    type DeltaEntry = {
+      accountId: number;
+      month: number;
+      year: number;
+      dueDate: Date;
+      delta: number;
+    };
+
+    const deltaMap = new Map<string, DeltaEntry>();
+
+    const addDeltaFromTx = (tx: any | null, sign: 1 | -1) => {
+      if (!tx || tx.status !== 'CONFIRMED') return;
+
+      for (const [creditAccountId, account] of creditAccounts) {
+        const isCreditSource = Number(tx.accountId) === creditAccountId;
+        const isCreditDestination = Number(tx.toAccountId) === creditAccountId;
+
+        let contribution = 0;
+        if (tx.type === 'EXPENSE' && isCreditSource) {
+          contribution = Number(tx.amount);
+        } else if (tx.type === 'TRANSFER' && isCreditSource) {
+          contribution = Number(tx.amount);
+        } else if (tx.type === 'INCOME' && isCreditSource) {
+          contribution = -Number(tx.amount);
+        } else if (tx.type === 'TRANSFER' && isCreditDestination) {
+          contribution = -Number(tx.amount);
+        }
+
+        if (contribution === 0) continue;
+
+        const cycle = this.calculateInvoiceCycle(
+          tx.date,
+          tx.type,
+          isCreditSource,
+          account.creditClosingDay,
+          account.creditDueDay,
+        );
+
+        const key = `${creditAccountId}-${cycle.month}-${cycle.year}`;
+        const existing = deltaMap.get(key);
+        if (existing) {
+          existing.delta += sign * contribution;
+        } else {
+          deltaMap.set(key, {
+            accountId: creditAccountId,
+            month: cycle.month,
+            year: cycle.year,
+            dueDate: cycle.dueDate,
+            delta: sign * contribution,
+          });
+        }
+      }
+    };
+
+    // Remove previous effect and apply current effect.
+    addDeltaFromTx(previousTx, -1);
+    addDeltaFromTx(currentTx, 1);
+
+    const fallbackAccountIds = new Set<number>();
+
+    for (const [, entry] of deltaMap) {
+      if (entry.delta === 0) continue;
+
+      const account = creditAccounts.get(entry.accountId);
+      if (!account) continue;
+
+      const invoice = await (this.prismaService as any).creditInvoice.findUnique({
+        where: {
+          accountId_month_year: {
+            accountId: entry.accountId,
+            month: entry.month,
+            year: entry.year,
+          },
+        },
+      });
+
+      if (!invoice || invoice.status !== 'OPEN') {
+        fallbackAccountIds.add(entry.accountId);
+        continue;
+      }
+
+      const nextTotal = Math.max(0, Number(invoice.totalAmount) + entry.delta);
+      await this.syncFaturaTransaction(
+        invoice,
+        account.userId,
+        account.groupId,
+        nextTotal,
+        entry.dueDate,
+      );
+    }
+
+    for (const accountId of fallbackAccountIds) {
+      const account = creditAccounts.get(accountId);
+      await this.handleAutoInvoice(
+        [accountId],
+        account?.userId ?? userId,
+        account?.groupId ?? groupId,
+      );
+    }
+  }
+
+  /**
+   * Main entry point: called after a transaction is created/updated/deleted.
+   * Manages the auto-invoice for all affected credit accounts.
+   *
+   * @param affectedAccountIds Set of account IDs that may have changed
+   * @param userId Owner user ID
+   */
+  private async handleAutoInvoice(
+    affectedAccountIds: number[],
+    userId: number,
+    groupId: number | null | undefined,
+  ): Promise<void> {
+    for (const accountId of affectedAccountIds) {
+      const account = await this.prismaService.account.findUnique({
+        where: { id: accountId },
+      }) as any;
+
+      if (
+        !account ||
+        account.type !== 'CREDIT' ||
+        !account.autoInvoice ||
+        !account.creditClosingDay ||
+        !account.creditDueDay
+      ) {
+        continue;
+      }
+
+      // Bootstrap mode (first activation): do not backfill past cycles.
+      // Start from the current cycle and seed total using current account balance.
+      const existingInvoiceCount = await (this.prismaService as any).creditInvoice.count({
+        where: { accountId },
+      });
+      const shouldBootstrapFromCurrentBalance = existingInvoiceCount === 0;
+      const currentCycle = this.calculateInvoiceCycle(
+        new Date(),
+        'EXPENSE',
+        true,
+        account.creditClosingDay,
+        account.creditDueDay,
+      );
+      const isBeforeCurrentCycle = (month: number, year: number) =>
+        year < currentCycle.year || (year === currentCycle.year && month < currentCycle.month);
+
+      // Find every distinct billing cycle that has at least one confirmed transaction
+      const allTx = await this.prismaService.transaction.findMany({
+        where: {
+          status: 'CONFIRMED',
+          OR: [
+            { accountId },
+            { toAccountId: accountId },
+          ],
+        },
+      });
+
+      // Collect unique (month, year) cycles
+      const cycleSet = new Map<string, { month: number; year: number; dueDate: Date }>();
+      for (const tx of allTx) {
+        const isCreditSource = tx.accountId === accountId;
+        const cycle = this.calculateInvoiceCycle(
+          tx.date,
+          tx.type,
+          isCreditSource,
+          account.creditClosingDay,
+          account.creditDueDay,
+        );
+        if (isBeforeCurrentCycle(cycle.month, cycle.year)) {
+          continue;
+        }
+        const key = `${cycle.month}-${cycle.year}`;
+        if (!cycleSet.has(key)) cycleSet.set(key, cycle);
+      }
+
+      if (shouldBootstrapFromCurrentBalance) {
+        cycleSet.clear();
+        cycleSet.set(`${currentCycle.month}-${currentCycle.year}`, currentCycle);
+      }
+
+      // Also recalculate any existing OPEN invoices that might now be empty
+      // (e.g. when a transaction is deleted). CLOSED and PAID invoices are never modified.
+      const existingOpenInvoices = await (this.prismaService as any).creditInvoice.findMany({
+        where: { accountId, status: 'OPEN' },
+      });
+      for (const inv of existingOpenInvoices) {
+        if (isBeforeCurrentCycle(inv.month, inv.year)) {
+          continue;
+        }
+        const key = `${inv.month}-${inv.year}`;
+        if (!cycleSet.has(key)) {
+          // Rebuild the dueDate from existing invoice data
+          const maxDay = new Date(inv.year, inv.month, 0).getDate();
+          const clampedDueDay = Math.min(account.creditDueDay, maxDay);
+          const dueDate = new Date(Date.UTC(inv.year, inv.month - 1, clampedDueDay));
+          cycleSet.set(key, { month: inv.month, year: inv.year, dueDate });
+        }
+      }
+
+      // Process each cycle — only update OPEN invoices; CLOSED/PAID are immutable
+      for (const [, cycle] of cycleSet) {
+        if (isBeforeCurrentCycle(cycle.month, cycle.year)) {
+          continue;
+        }
+
+        const invoice = await this.findOrCreateCreditInvoice(
+          accountId,
+          account.userId,
+          account.groupId,
+          cycle.month,
+          cycle.year,
+          cycle.dueDate,
+        );
+
+        // Skip invoices that are already closed or paid — they must not be modified
+        if (invoice.status === 'CLOSED' || invoice.status === 'PAID') {
+          continue;
+        }
+
+        let total: number;
+        if (
+          shouldBootstrapFromCurrentBalance &&
+          cycle.month === currentCycle.month &&
+          cycle.year === currentCycle.year
+        ) {
+          const currentBalance = await this.getCurrentAccountBalanceForAutoInvoice(account);
+          // For CREDIT accounts, debt is represented by a negative balance.
+          total = Math.max(0, -currentBalance);
+        } else {
+          total = await this.recalculateCreditInvoiceTotal(
+            invoice,
+            account.creditClosingDay,
+            account.creditDueDay,
+          );
+        }
+
+        await this.syncFaturaTransaction(
+          invoice,
+          account.userId,
+          account.groupId,
+          total,
+          cycle.dueDate,
+        );
+      }
+    }
   }
 }

@@ -157,4 +157,86 @@ export class SubcategoryController {
         return this.subcategoryService.unhide(parseInt(id), userId);
     }
 
+    @Put(':id/set-default-fee')
+    @ApiParam({ name: 'id', description: 'ID da subcategoria' })
+    @ApiOperation({ summary: 'Definir subcategoria como padrão para taxas automáticas (deve ser do tipo EXPENSE)' })
+    @ApiResponse({ status: HttpStatus.OK, type: SubcategoryData })
+    @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Subcategoria não é do tipo EXPENSE' })
+    @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Subcategoria não encontrada' })
+    public async setDefaultFee(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<SubcategoryData> {
+        const userId = req?.user?.userId || 1;
+        return this.subcategoryService.setDefaultFeeSubcategory(parseInt(id), userId);
+    }
+
+    @Put(':id/set-default-discount')
+    @ApiParam({ name: 'id', description: 'ID da subcategoria' })
+    @ApiOperation({ summary: 'Definir subcategoria como padrão para descontos automáticos (deve ser do tipo INCOME)' })
+    @ApiResponse({ status: HttpStatus.OK, type: SubcategoryData })
+    @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Subcategoria não é do tipo INCOME' })
+    @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Subcategoria não encontrada' })
+    public async setDefaultDiscount(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<SubcategoryData> {
+        const userId = req?.user?.userId || 1;
+        return this.subcategoryService.setDefaultDiscountSubcategory(parseInt(id), userId);
+    }
+
+    @Put('clear-default-fee')
+    @ApiOperation({ summary: 'Remover configuração de subcategoria padrão de taxa' })
+    @ApiResponse({ status: HttpStatus.OK })
+    public async clearDefaultFee(
+        @Query('groupId') groupId: string | undefined,
+        @Request() req: AuthenticatedRequest
+    ): Promise<void> {
+        const userId = req?.user?.userId || 1;
+        await this.subcategoryService.clearDefaultFeeSubcategory(userId, groupId ? parseInt(groupId) : undefined);
+    }
+
+    @Put('clear-default-discount')
+    @ApiOperation({ summary: 'Remover configuração de subcategoria padrão de desconto' })
+    @ApiResponse({ status: HttpStatus.OK })
+    public async clearDefaultDiscount(
+        @Query('groupId') groupId: string | undefined,
+        @Request() req: AuthenticatedRequest
+    ): Promise<void> {
+        const userId = req?.user?.userId || 1;
+        await this.subcategoryService.clearDefaultDiscountSubcategory(userId, groupId ? parseInt(groupId) : undefined);
+    }
+
+    @Put(':id/set-default-tithe')
+    @ApiParam({ name: 'id', description: 'ID da subcategoria de despesa' })
+    @ApiOperation({ summary: 'Definir subcategoria como padrão para dizimo automático' })
+    @ApiResponse({ status: HttpStatus.OK, type: SubcategoryData })
+    public async setDefaultTithe(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<SubcategoryData> {
+        const userId = req?.user?.userId || 1;
+        return this.subcategoryService.setDefaultTitheSubcategory(parseInt(id), userId);
+    }
+
+    @Put('clear-default-tithe')
+    @ApiOperation({ summary: 'Remover configuração de subcategoria padrão de dizimo' })
+    @ApiResponse({ status: HttpStatus.OK })
+    public async clearDefaultTithe(
+        @Query('groupId') groupId: string | undefined,
+        @Request() req: AuthenticatedRequest
+    ): Promise<void> {
+        const userId = req?.user?.userId || 1;
+        await this.subcategoryService.clearDefaultTitheSubcategory(userId, groupId ? parseInt(groupId) : undefined);
+    }
+
+    @Put(':id/set-tithe-participant')
+    @ApiParam({ name: 'id', description: 'ID da subcategoria de renda' })
+    @ApiOperation({ summary: 'Marcar subcategoria como participante do cálculo de dizimo' })
+    @ApiResponse({ status: HttpStatus.OK, type: SubcategoryData })
+    public async setTitheParticipant(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<SubcategoryData> {
+        const userId = req?.user?.userId || 1;
+        return this.subcategoryService.setTitheParticipant(parseInt(id), userId, true);
+    }
+
+    @Put(':id/unset-tithe-participant')
+    @ApiParam({ name: 'id', description: 'ID da subcategoria de renda' })
+    @ApiOperation({ summary: 'Remover subcategoria do cálculo de dizimo' })
+    @ApiResponse({ status: HttpStatus.OK, type: SubcategoryData })
+    public async unsetTitheParticipant(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<SubcategoryData> {
+        const userId = req?.user?.userId || 1;
+        return this.subcategoryService.setTitheParticipant(parseInt(id), userId, false);
+    }
+
 }

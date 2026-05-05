@@ -11,4 +11,10 @@ export class SubcategoryInput extends PickType(SubcategoryData, ['name', 'catego
 
     @ApiProperty({ description: 'Group ID', example: 1, required: false })
     public readonly groupId?: number;
+
+    @ApiProperty({ description: 'Tithe percentage (default 10)', example: 10, required: false })
+    public readonly tithePercentage?: number;
+
+    @ApiProperty({ description: 'How many tithe transactions are generated (default 1)', example: 1, required: false })
+    public readonly titheTransactionCount?: number;
 }

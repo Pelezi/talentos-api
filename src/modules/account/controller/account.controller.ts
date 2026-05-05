@@ -35,6 +35,22 @@ export class AccountController {
         );
     }
 
+    @Get('primary-cash/info')
+    @ApiQuery({ name: 'groupId', required: false, description: 'Filtrar por ID do grupo' })
+    @ApiOperation({
+        summary: 'Obter a conta CASH primária',
+        description: 'Retorna a conta CASH primária do usuário ou grupo. Necessária para usar autoInvoice em cartões de crédito.'
+    })
+    @ApiResponse({ status: HttpStatus.OK, type: AccountData, description: 'Conta CASH primária encontrada' })
+    @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Nenhuma conta CASH primária configurada' })
+    public async getPrimaryCash(
+        @Query('groupId') groupId?: string,
+        @Request() req?: AuthenticatedRequest
+    ): Promise<AccountData | null> {
+        const userId = req?.user?.userId || 1;
+        return this.accountService.getPrimaryCashAccount(userId, groupId ? parseInt(groupId) : undefined);
+    }
+
     @Get(':id')
     @ApiParam({ name: 'id', description: 'ID único da conta' })
     @ApiOperation({ 
@@ -225,3 +241,4 @@ export class AccountController {
     }
 
 }
+

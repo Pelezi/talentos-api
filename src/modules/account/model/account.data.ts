@@ -39,6 +39,12 @@ export class AccountData {
     @ApiProperty({ description: 'Budget month basis for CREDIT accounts with PER_PURCHASE debit', enum: ['PURCHASE_DATE','DUE_DATE'], required: false })
     public readonly budgetMonthBasis?: BudgetMonthBasis;
 
+    @ApiProperty({ description: 'Automatically create invoices for CREDIT accounts', example: false })
+    public readonly autoInvoice: boolean;
+
+    @ApiProperty({ description: 'Is this the primary CASH account for invoice payments', example: false })
+    public readonly isPrimary: boolean;
+
     @ApiProperty({ description: 'Created at', example: '2024-01-01T00:00:00Z' })
     public readonly createdAt: Date;
 
@@ -62,6 +68,8 @@ export class AccountData {
         this.creditClosingDay = entity.creditClosingDay ?? undefined;
         this.debitMethod = entity.debitMethod ?? undefined;
         this.budgetMonthBasis = entity.budgetMonthBasis ?? undefined;
+        this.autoInvoice = (entity as any).autoInvoice ?? false;
+        this.isPrimary = (entity as any).isPrimary ?? false;
     }
 
 }

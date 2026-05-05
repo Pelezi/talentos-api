@@ -31,4 +31,10 @@ export class AccountInput {
 
     @ApiProperty({ description: 'Budget month basis for CREDIT accounts with PER_PURCHASE debit', enum: ['PURCHASE_DATE','DUE_DATE'], example: 'PURCHASE_DATE', required: false })
     public readonly budgetMonthBasis?: BudgetMonthBasis;
+
+    @ApiProperty({ description: 'Automatically create invoices for CREDIT accounts', example: false, required: false })
+    public readonly autoInvoice?: boolean;
+
+    @ApiProperty({ description: 'Is this the primary CASH account for invoice payments', example: false, required: false })
+    public readonly isPrimary?: boolean;
 }

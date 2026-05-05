@@ -108,6 +108,9 @@ export class TransactionData {
     @ApiProperty({ description: 'Parent transaction ID (for installments)', example: 100, required: false })
     public readonly parentTransactionId?: number | null;
 
+    @ApiProperty({ description: 'Whether this transaction is linked to a credit invoice (cannot be edited)', example: false })
+    public readonly isInvoice: boolean = false;
+
     public constructor(entity: any) {
         this.accountId = entity.accountId;
         this.id = entity.id;
@@ -183,6 +186,9 @@ export class TransactionData {
         this.recurrenceRuleId = entity.recurrenceRuleId;
         this.recurrenceIndex = entity.recurrenceIndex;
         this.parentTransactionId = entity.parentTransactionId;
+
+        // Invoice flag - true if this transaction has a linked credit invoice
+        this.isInvoice = !!(entity.creditInvoice);
     }
 
 }

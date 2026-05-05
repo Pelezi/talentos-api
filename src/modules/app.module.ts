@@ -14,6 +14,7 @@ import { AccountModule } from './account/account.module';
 import { InstallmentModule } from './installment/installment.module';
 import { RecurrenceModule } from './recurrence/recurrence.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
+import { InvoiceModule } from './invoice/invoice.module';
 
 @Module({
     imports: [
@@ -30,7 +31,8 @@ import { SchedulerModule } from './scheduler/scheduler.module';
         AccountModule,
         InstallmentModule,
         RecurrenceModule,
-        SchedulerModule
+        SchedulerModule,
+        InvoiceModule,
     ]
 })
 export class ApplicationModule {}
