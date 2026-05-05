@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import { CommonModule } from './common';
 import { UserModule } from './user/user.module';
@@ -10,9 +11,13 @@ import { ExpenseModule } from './expense/expense.module';
 import { GroupModule } from './group/group.module';
 import { NotificationModule } from './notification/notification.module';
 import { AccountModule } from './account/account.module';
+import { InstallmentModule } from './installment/installment.module';
+import { RecurrenceModule } from './recurrence/recurrence.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 
 @Module({
     imports: [
+        ScheduleModule.forRoot(),
         CommonModule,
         UserModule,
         CategoryModule,
@@ -22,7 +27,10 @@ import { AccountModule } from './account/account.module';
         ExpenseModule,
         GroupModule,
         NotificationModule,
-        AccountModule
+        AccountModule,
+        InstallmentModule,
+        RecurrenceModule,
+        SchedulerModule
     ]
 })
 export class ApplicationModule {}

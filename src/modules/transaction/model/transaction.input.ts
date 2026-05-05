@@ -34,4 +34,15 @@ export class TransactionInput {
 
     @ApiProperty({ description: 'Destination account ID (for transfers)', example: 2, required: false })
     public readonly toAccountId?: number;
+
+    // Fee fields
+    @ApiProperty({ description: 'Fee amount (will create a fee transaction)', example: 50.00, required: false })
+    public readonly feeAmount?: number;
+
+    @ApiProperty({ description: 'Account where fee will be debited (if different from main account)', example: 2, required: false })
+    public readonly feeAccountId?: number;
+
+    // Status field
+    @ApiProperty({ description: 'Transaction status', enum: ['PENDING', 'CONFIRMED'], example: 'CONFIRMED', required: false })
+    public readonly status?: 'PENDING' | 'CONFIRMED';
 }

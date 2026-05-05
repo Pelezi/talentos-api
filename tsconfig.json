@@ -14,7 +14,8 @@
     "strictNullChecks": true,
     "noUnusedLocals": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+    "useUnknownInCatchVariables": false
   },
   "include": [
     "src/**/*",

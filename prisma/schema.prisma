@@ -8,43 +8,48 @@ datasource db {
 }
 
 model User {
-  id          Int      @id @default(autoincrement())
-  email       String   @unique
-  password    String
-  firstName   String
-  lastName    String
-  phoneNumber String?
-  firstAccess Boolean  @default(true)
-  timezone    String   @default("UTC")
-  defaultHomepage String?
-  isOwner       Boolean  @default(false)
-  refreshToken String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                      Int      @id @default(autoincrement())
+  email                   String   @unique
+  password                String
+  firstName               String
+  lastName                String
+  phoneNumber             String?
+  firstAccess             Boolean  @default(true)
+  timezone                String   @default("UTC")
+  defaultHomepage         String?
+  isOwner                 Boolean  @default(false)
+  refreshToken            String?
+  defaultFeeSubcategoryId Int? // Subcategoria padrão para taxas automáticas
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
-  budgets           Budget[]
-  categories        Category[]
-  subcategories     Subcategory[]
-  transactions      Transaction[]
-  ownedGroups       Group[]            @relation("GroupOwner")
-  groupMemberships  GroupMember[]
-  receivedInvitations GroupInvitation[] @relation("UserInvitations")
-  sentInvitations   GroupInvitation[]  @relation("SentInvitations")
-  notifications     Notification[]
-  accounts            Account[]
-  apiKeys             ApiKey[]
+  budgets               Budget[]
+  categories            Category[]
+  subcategories         Subcategory[]
+  transactions          Transaction[]
+  ownedGroups           Group[]           @relation("GroupOwner")
+  groupMemberships      GroupMember[]
+  receivedInvitations   GroupInvitation[] @relation("UserInvitations")
+  sentInvitations       GroupInvitation[] @relation("SentInvitations")
+  notifications         Notification[]
+  accounts              Account[]
+  apiKeys               ApiKey[]
+  defaultFeeSubcategory Subcategory?      @relation("UserDefaultFeeSubcategory", fields: [defaultFeeSubcategoryId], references: [id], onDelete: SetNull)
+  installmentPlans      InstallmentPlan[]
+  recurrenceRules       RecurrenceRule[]
+  auditLogs             AuditLog[]
 }
 
 model ApiKey {
-  id          Int      @id @default(autoincrement())
-  userId      Int
-  key         String   @unique
-  name        String
-  lastUsedAt  DateTime?
-  createdAt   DateTime @default(now())
-  
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  key        String    @unique
+  name       String
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([key])
   @@index([userId])
 }
@@ -82,13 +87,15 @@ model Subcategory {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
-  user         User          @relation(fields: [userId], references: [id], onDelete: NoAction)
-  group        Group?        @relation(fields: [groupId], references: [id], onDelete: NoAction)
-  category     Category      @relation(fields: [categoryId], references: [id], onDelete: NoAction)
-  budgets      Budget[]
-  transactions Transaction[]
+  user            User          @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group           Group?        @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  category        Category      @relation(fields: [categoryId], references: [id], onDelete: NoAction)
+  budgets         Budget[]
+  transactions    Transaction[]
   // Accounts that reference this subcategory (used by PREPAID accounts)
-  accounts Account[]
+  accounts        Account[]
+  // Users who have this as default fee subcategory (many users can have same subcategory)
+  defaultForUsers User[]        @relation("UserDefaultFeeSubcategory")
 
   @@index([userId])
   @@index([groupId])
@@ -125,28 +132,63 @@ model Transaction {
   groupId       Int?
   subcategoryId Int?
   accountId     Int
+  toAccountId   Int?
   title         String?
-  amount        Decimal  @db.Decimal(10, 2)
+  amount        Decimal      @db.Decimal(10, 2)
   description   String?
   date          DateTime
   type          CategoryType @default(EXPENSE)
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
-  toAccountId Int?
 
-  user        User        @relation(fields: [userId], references: [id], onDelete: NoAction)
-  group       Group?      @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  // Fee fields
+  feeAmount              Decimal? @db.Decimal(10, 2) // Taxa/comissão
+  feeAccountId           Int? // Conta onde taxa será debitada
+  feeTransactionId       Int?     @unique // Link para transação de taxa (auto-criada)
+  linkedFeeTransactionId Int? // Link inverso (se esta é uma taxa)
+
+  // Status and scheduling fields
+  status        TransactionStatus @default(CONFIRMED)
+  scheduledDate DateTime? // Data prevista (para pendentes)
+  confirmedAt   DateTime? // Quando foi confirmada
+
+  // Installment and recurrence fields (para fases futuras)
+  installmentPlanId   Int? // Referência ao plano de parcelamento
+  recurrenceRuleId    Int? // Referência à regra de recorrência
+  recurrenceIndex     Int? // Índice na recorrência (0-based)
+  parentTransactionId Int? // Transação original (para parceladas)
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group       Group?       @relation(fields: [groupId], references: [id], onDelete: NoAction)
   subcategory Subcategory? @relation(fields: [subcategoryId], references: [id], onDelete: NoAction)
-  account     Account     @relation(fields: [accountId], references: [id], onDelete: NoAction)
-  accountTo   Account?    @relation("TransactionToAccount", fields: [toAccountId], references: [id], onDelete: NoAction)
+  account     Account      @relation(fields: [accountId], references: [id], onDelete: NoAction)
+  accountTo   Account?     @relation("TransactionToAccount", fields: [toAccountId], references: [id], onDelete: NoAction)
+  feeAccount  Account?     @relation("TransactionFeeAccount", fields: [feeAccountId], references: [id], onDelete: NoAction)
+
+  // Self-referential relationships
+  feeTransaction       Transaction?     @relation("TransactionFee", fields: [feeTransactionId], references: [id], onDelete: Cascade)
+  linkedFeeTransaction Transaction?     @relation("TransactionFee")
+  parentTransaction    Transaction?     @relation("TransactionChildren", fields: [parentTransactionId], references: [id], onDelete: SetNull)
+  childTransactions    Transaction[]    @relation("TransactionChildren")
+  installmentPlan      InstallmentPlan? @relation(fields: [installmentPlanId], references: [id], onDelete: Cascade)
+  recurrenceRule       RecurrenceRule?  @relation(fields: [recurrenceRuleId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([groupId])
   @@index([subcategoryId])
   @@index([accountId])
   @@index([toAccountId])
+  @@index([feeAccountId])
   @@index([date])
   @@index([type])
+  @@index([status])
+  @@index([scheduledDate])
+  @@index([feeTransactionId])
+  @@index([linkedFeeTransactionId])
+  @@index([parentTransactionId])
+  @@index([installmentPlanId])
+  @@index([recurrenceRuleId])
+  @@index([recurrenceIndex])
 }
 
 enum CategoryType {
@@ -154,6 +196,11 @@ enum CategoryType {
   INCOME
   TRANSFER
   UPDATE
+}
+
+enum TransactionStatus {
+  PENDING // Aguardando confirmação
+  CONFIRMED // Confirmada (padrão)
 }
 
 model Group {
@@ -164,42 +211,47 @@ model Group {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  owner         User              @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: NoAction)
-  members       GroupMember[]
-  roles         GroupRole[]
-  budgets       Budget[]
-  categories    Category[]
-  subcategories Subcategory[]
-  transactions  Transaction[]
-  invitations   GroupInvitation[]
-  accounts      Account[]
+  owner            User              @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: NoAction)
+  members          GroupMember[]
+  roles            GroupRole[]
+  budgets          Budget[]
+  categories       Category[]
+  subcategories    Subcategory[]
+  transactions     Transaction[]
+  invitations      GroupInvitation[]
+  accounts         Account[]
+  installmentPlans InstallmentPlan[]
+  recurrenceRules  RecurrenceRule[]
+  auditLogs        AuditLog[]
 
   @@index([ownerId])
 }
 
 model GroupRole {
-  id          Int      @id @default(autoincrement())
+  id          Int     @id @default(autoincrement())
   groupId     Int
   name        String
   description String?
-  
+
   // Permission flags
-  canViewTransactions       Boolean @default(true)
-  canManageOwnTransactions  Boolean @default(false)  // Manage only own transactions
+  canViewTransactions        Boolean @default(true)
+  canManageOwnTransactions   Boolean @default(false) // Manage only own transactions
   canManageGroupTransactions Boolean @default(false) // Manage all group transactions
-  canViewCategories         Boolean @default(true)
-  canManageCategories       Boolean @default(false)
-  canViewSubcategories      Boolean @default(true)
-  canManageSubcategories    Boolean @default(false)
-  canViewBudgets            Boolean @default(true)
-  canManageBudgets          Boolean @default(false)
-  canViewAccounts           Boolean @default(true)
-  canManageOwnAccounts      Boolean @default(false)  // Manage only own accounts
-  canManageGroupAccounts    Boolean @default(false)  // Manage all group accounts
-  canManageGroup            Boolean @default(false)  // Manage members, roles, and group settings
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  canViewCategories          Boolean @default(true)
+  canManageCategories        Boolean @default(false)
+  canViewSubcategories       Boolean @default(true)
+  canManageSubcategories     Boolean @default(false)
+  canViewBudgets             Boolean @default(true)
+  canManageBudgets           Boolean @default(false)
+  canViewAccounts            Boolean @default(true)
+  canManageOwnAccounts       Boolean @default(false) // Manage only own accounts
+  canManageGroupAccounts     Boolean @default(false) // Manage all group accounts
+  canManageInstallmentPlans  Boolean @default(false) // Manage installment plans
+  canManageRecurrences       Boolean @default(false) // Manage recurrence rules
+  canManageGroup             Boolean @default(false) // Manage members, roles, and group settings
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   group       Group             @relation(fields: [groupId], references: [id], onDelete: NoAction)
   members     GroupMember[]
@@ -228,19 +280,19 @@ model GroupMember {
 }
 
 model GroupInvitation {
-  id        Int      @id @default(autoincrement())
+  id        Int              @id @default(autoincrement())
   groupId   Int
-  userId    Int      // User being invited
-  invitedBy Int      // User who sent the invitation
+  userId    Int // User being invited
+  invitedBy Int // User who sent the invitation
   roleId    Int
   status    InvitationStatus @default(PENDING)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
 
-  group     Group     @relation(fields: [groupId], references: [id], onDelete: NoAction)
-  user      User      @relation("UserInvitations", fields: [userId], references: [id], onDelete: NoAction)
-  inviter   User      @relation("SentInvitations", fields: [invitedBy], references: [id], onDelete: NoAction)
-  role      GroupRole @relation(fields: [roleId], references: [id], onDelete: NoAction)
+  group   Group     @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  user    User      @relation("UserInvitations", fields: [userId], references: [id], onDelete: NoAction)
+  inviter User      @relation("SentInvitations", fields: [invitedBy], references: [id], onDelete: NoAction)
+  role    GroupRole @relation(fields: [roleId], references: [id], onDelete: NoAction)
 
   @@unique([groupId, userId])
   @@index([groupId])
@@ -256,12 +308,12 @@ enum InvitationStatus {
 
 model Notification {
   id        Int              @id @default(autoincrement())
-  userId    Int              // User who receives the notification
+  userId    Int // User who receives the notification
   type      NotificationType
   title     String
   message   String
   isRead    Boolean          @default(false)
-  metadata  Json?            // Additional data (groupId, transactionId, etc.)
+  metadata  Json? // Additional data (groupId, transactionId, etc.)
   createdAt DateTime         @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: NoAction)
@@ -291,26 +343,27 @@ enum NotificationType {
 }
 
 model Account {
-  id          Int         @id @default(autoincrement())
-  userId      Int
-  groupId     Int?
-  name        String
-  type        AccountType
+  id               Int               @id @default(autoincrement())
+  userId           Int
+  groupId          Int?
+  name             String
+  type             AccountType
   // Optional link to a subcategory (used for prepaid accounts)
-  subcategoryId Int?
-  creditDueDay Int?
+  subcategoryId    Int?
+  creditDueDay     Int?
   creditClosingDay Int?
-  debitMethod DebitMethod?
+  debitMethod      DebitMethod?
   budgetMonthBasis BudgetMonthBasis? @default(PURCHASE_DATE)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
-  user     User             @relation(fields: [userId], references: [id], onDelete: NoAction)
-  group    Group?           @relation(fields: [groupId], references: [id], onDelete: NoAction)
-  subcategory Subcategory?  @relation(fields: [subcategoryId], references: [id], onDelete: NoAction)
-  balances AccountBalance[]
-  transactions Transaction[]
-  transactionsTo Transaction[] @relation("TransactionToAccount")
+  user                 User             @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group                Group?           @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  subcategory          Subcategory?     @relation(fields: [subcategoryId], references: [id], onDelete: NoAction)
+  balances             AccountBalance[]
+  transactions         Transaction[]
+  transactionsTo       Transaction[]    @relation("TransactionToAccount")
+  transactionsWithFees Transaction[]    @relation("TransactionFeeAccount")
 
   @@index([userId])
   @@index([groupId])
@@ -345,4 +398,99 @@ model AccountBalance {
 
   @@index([accountId])
   @@index([date])
+}
+
+model InstallmentPlan {
+  id                   Int                   @id @default(autoincrement())
+  userId               Int
+  groupId              Int?
+  totalAmount          Decimal               @db.Decimal(10, 2) // Valor original antes de juros
+  interestRate         Decimal               @db.Decimal(5, 2) // % de juros (0-100)
+  totalWithInterest    Decimal               @db.Decimal(10, 2) // Valor total com juros
+  installmentCount     Int // Número de parcelas (2+)
+  amountPerInstallment Decimal               @db.Decimal(10, 2) // Calculado: totalWithInterest / installmentCount
+  status               InstallmentPlanStatus @default(ACTIVE)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group        Group?        @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  transactions Transaction[]
+
+  @@index([userId])
+  @@index([groupId])
+  @@index([status])
+}
+
+enum InstallmentPlanStatus {
+  ACTIVE // Em andamento
+  COMPLETED // Todas as parcelas confirmadas
+  CANCELLED // Cancelado e transações revertidas
+}
+
+model RecurrenceRule {
+  id                  Int                  @id @default(autoincrement())
+  userId              Int
+  groupId             Int?
+  frequency           RecurrenceFrequency // DAILY, WEEKLY, MONTHLY, etc
+  interval            Int                  @default(1) // A cada X unidades (ex: 2 semanas)
+  daysOfWeek          String? // "1,3,5" para SEG,QUA,SEX (se WEEKLY ou MONTHLY por semana)
+  dayOfMonth          Int? // Dia específico (1-31) se MONTHLY por data
+  weekOfMonth         Int? // Semana do mês: 1-4 ou -1 (última) se MONTHLY por dia da semana
+  startDate           DateTime // Primeira ocorrência
+  endDate             DateTime? // NULL = indefinida
+  occurrenceCount     Int? // Número máximo de ocorrências (NULL = indefinido)
+  occurrenceGenerated Int                  @default(0) // Quantas já foram geradas?
+  status              RecurrenceRuleStatus @default(ACTIVE)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group        Group?        @relation(fields: [groupId], references: [id], onDelete: NoAction)
+  transactions Transaction[]
+
+  @@index([userId])
+  @@index([groupId])
+  @@index([status])
+  @@index([startDate])
+}
+
+enum RecurrenceFrequency {
+  DAILY
+  WEEKLY
+  BIWEEKLY // A cada 2 semanas
+  MONTHLY
+  QUARTERLY // 3 em 3 meses
+  SEMIANNUALLY // 6 em 6 meses
+  ANNUALLY
+  CUSTOM // Para futuro: padrão customizado
+}
+
+enum RecurrenceRuleStatus {
+  ACTIVE // Gerando novas transações
+  PAUSED // Temporariamente parada
+  COMPLETED // Atingiu endDate ou occurrenceCount
+  CANCELLED // Cancelada permanentemente
+}
+
+model AuditLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  groupId     Int?
+  entityType  String // "Transaction", "InstallmentPlan", "RecurrenceRule", etc
+  entityId    Int
+  action      String // "CREATE", "UPDATE", "DELETE", "CONFIRM", "CANCEL"
+  changes     Json? // Objeto com before/after values
+  description String? // Descrição humanizada da mudança
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: NoAction)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: NoAction)
+
+  @@index([userId])
+  @@index([groupId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
 }

@@ -134,8 +134,14 @@ export class AccountService {
         const baselineDate = lastBalance ? lastBalance.date : new Date(0);
 
         // Build transaction filter: any tx that references this account (either as from or to)
+        // Only include transactions up to today (exclude future/scheduled)
         const conditions: Prisma.TransactionWhereInput[] = [
-            { date: { gt: baselineDate } },
+            { 
+                date: { 
+                    gt: baselineDate,
+                    lte: new Date()  // Exclude future transactions
+                }
+            },
             {
                 OR: [
                     { accountId },

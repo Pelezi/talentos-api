@@ -82,6 +82,40 @@ export class TransactionController {
         );
     }
 
+    @Get('pending')
+    @ApiOperation({ 
+        summary: 'Listar transações pendentes',
+        description: 'Retorna todas as transações com status PENDING do usuário autenticado. Transações pendentes são aquelas que foram agendadas com uma data prevista mas ainda não foram confirmadas. Use este endpoint para exibir uma tela separada de transações pendentes que aguardam confirmação manual.'
+    })
+    @ApiQuery({ name: 'groupId', required: false, description: 'Filtrar por ID do grupo' })
+    @ApiResponse({ status: HttpStatus.OK, isArray: true, type: TransactionData, description: 'Lista de transações pendentes retornada com sucesso' })
+    @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Token JWT ausente ou inválido' })
+    public async findPending(
+        @Query('groupId') groupId?: string,
+        @Request() req?: AuthenticatedRequest
+    ): Promise<TransactionData[]> {
+        const userId = req?.user?.userId || 1;
+        return this.transactionService.findPendingByUser(
+            userId,
+            groupId ? parseInt(groupId) : undefined
+        );
+    }
+
+    @Put(':id/confirm')
+    @ApiParam({ name: 'id', description: 'ID único da transação a ser confirmada' })
+    @ApiOperation({ 
+        summary: 'Confirmar uma transação pendente',
+        description: 'Confirma uma transação pendente, alterando seu status para CONFIRMED e movendo-a para a data/hora atual. Esta operação é usada quando uma transação agendada finalmente ocorre. Após a confirmação, a transação aparecerá na lista normal de transações e será contabilizada nas análises e comparações.'
+    })
+    @ApiResponse({ status: HttpStatus.OK, type: TransactionData, description: 'Transação confirmada com sucesso' })
+    @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Transação não encontrada ou não pertence ao usuário' })
+    @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Transação já está confirmada' })
+    @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Token JWT ausente ou inválido' })
+    public async confirmTransaction(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<TransactionData> {
+        const userId = req?.user?.userId || 1;
+        return this.transactionService.confirmTransaction(parseInt(id), userId);
+    }
+
     @Get(':id')
     @ApiParam({ name: 'id', description: 'ID único da transação' })
     @ApiOperation({ 
@@ -92,7 +126,8 @@ export class TransactionController {
     @ApiResponse({ status: HttpStatus.NOT_FOUND, description: 'Transação não encontrada ou não pertence ao usuário' })
     @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Token JWT ausente ou inválido' })
     public async findById(@Param('id') id: string, @Request() req: AuthenticatedRequest): Promise<TransactionData> {
-        return await this.transactionService.findById(parseInt(id));
+        const userId = req?.user?.userId || 1;
+        return await this.transactionService.findById(parseInt(id), userId);
     }
 
     @Post()
@@ -119,7 +154,8 @@ export class TransactionController {
     @ApiResponse({ status: HttpStatus.BAD_REQUEST, description: 'Dados inválidos fornecidos' })
     @ApiResponse({ status: HttpStatus.UNAUTHORIZED, description: 'Token JWT ausente ou inválido' })
     public async update(@Param('id') id: string, @Body() input: TransactionInput, @Request() req: AuthenticatedRequest): Promise<TransactionData> {
-        return this.transactionService.update(parseInt(id), input);
+        const userId = req?.user?.userId || 1;
+        return this.transactionService.update(parseInt(id), userId, input);
     }
 
     @Delete(':id')
